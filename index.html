@@ -549,6 +549,7 @@
         <input type="number" id="tcInput" value="4" min="2" max="8">
         <button class="btn btn-outline" onclick="initTeams()">팀 구성 초기화</button>
         <button class="btn btn-blue" onclick="randomAssign()">🔀 랜덤 배정</button>
+        <button class="btn btn-outline" onclick="shuffleTeamOrder()">🔀 순서 섞기</button>
       </div>
       <div id="assignInfo" class="info-bar">팀을 초기화하면 드래그앤드롭으로 선수를 배정할 수 있습니다.</div>
     </div>
@@ -988,8 +989,20 @@ function allParticipants(){ return state.classes.flatMap(c=>c.members); }
 
 function addClass(){
   const id=state.classIdSeq++;
-  state.classes.push({id,name:`${id+1}반`,members:[]});
-  openClasses.add(id); save(); renderClasses();
+  const cls={id,name:`${id+1}반`,members:[]};
+  state.classes.push(cls);
+  openClasses.add(id);
+  const refId=state.classes[0]?.id;
+  const refN=(refId!==id&&state.teams.length)?state.teams.filter(t=>t.classId===refId).length:0;
+  const n=refN||parseInt(document.getElementById('tcInput')?.value)||4;
+  let tid=state.teams.length?Math.max(...state.teams.map(t=>t.id))+1:0;
+  for(let i=0;i<n;i++){
+    state.teams.push({id:tid++,classId:id,
+      name:`${cls.name} ${DEF_NAMES[i]||'팀'+(i+1)}`,
+      color:COLORS[i%COLORS.length],members:[],leader:null});
+  }
+  renderFormation();
+  save(); renderClasses();
   setTimeout(()=>{ const el=document.getElementById(`cfname-${id}`); if(el){el.focus();el.select();} },50);
 }
 function deleteClass(id){
@@ -1178,9 +1191,12 @@ function addBulkToClass(){
 function unassigned(){ const a=new Set(state.teams.flatMap(t=>t.members)); const ex=new Set(state.excluded||[]); return allParticipants().filter(p=>!a.has(p.uid)&&!ex.has(p.uid)); }
 function selectMode(m){
   if(state.confirmed&&state.matchMode!==m){
-    if(!confirm('이미 경기가 생성되었습니다. 경기 방식을 바꾸면 기존 경기 결과가 모두 사라집니다. 계속할까요?')) return;
-    state.matches=[]; state.confirmed=false;
-    const msg=document.getElementById('confirmMsg'); if(msg) msg.textContent='';
+    const cls=state.classes.find(c=>c.id===poolClassFilter);
+    const clsTeamIds=new Set(state.teams.filter(t=>t.classId===poolClassFilter).map(t=>t.id));
+    const clsMatches=state.matches.filter(m=>clsTeamIds.has(m.t1)||clsTeamIds.has(m.t2));
+    if(clsMatches.length&&!confirm(`${cls?.name||'현재 반'}의 경기 방식을 바꾸면 해당 반 경기 결과가 사라집니다. 계속할까요?`)) return;
+    state.matches=state.matches.filter(m=>!clsTeamIds.has(m.t1)&&!clsTeamIds.has(m.t2));
+    if(!state.matches.length){state.confirmed=false; const msg=document.getElementById('confirmMsg'); if(msg) msg.textContent='';}
   }
   state.matchMode=m;
   document.getElementById('mbtn-league').classList.toggle('active',m==='league');
@@ -1191,17 +1207,30 @@ function initTeams(){
   if(!allParticipants().length){alert('먼저 참가자를 입력해주세요!');return;}
   if(!state.classes.length){alert('먼저 반을 추가해주세요!');return;}
   const n=parseInt(document.getElementById('tcInput').value)||4;
-  if(state.confirmed&&!confirm('이미 편성되어 있습니다. 초기화하면 경기 결과도 사라집니다. 계속할까요?')) return;
-  state.matches=[]; state.confirmed=false;
-  let tid=0; state.teams=[];
-  state.classes.forEach(cls=>{
-    for(let i=0;i<n;i++){
-      state.teams.push({id:tid++,classId:cls.id,
-        name:`${cls.name} ${DEF_NAMES[i]||`팀${i+1}`}`,
-        color:COLORS[i%COLORS.length],members:[],leader:null});
-    }
+  const curClassId=poolClassFilter;
+  const cls=state.classes.find(c=>c.id===curClassId);
+  if(!cls) return;
+  const clsTeamIds=new Set(state.teams.filter(t=>t.classId===curClassId).map(t=>t.id));
+  const hasData=clsTeamIds.size||state.matches.some(m=>clsTeamIds.has(m.t1)||clsTeamIds.has(m.t2));
+  if(hasData&&!confirm(`${cls.name}의 팀을 초기화합니다. 해당 반 경기 결과도 사라집니다. 계속할까요?`)) return;
+  state.matches=state.matches.filter(m=>!clsTeamIds.has(m.t1)&&!clsTeamIds.has(m.t2));
+  if(!state.matches.length) state.confirmed=false;
+  state.teams=state.teams.filter(t=>t.classId!==curClassId);
+  let maxId=state.teams.length?Math.max(...state.teams.map(t=>t.id))+1:0;
+  for(let i=0;i<n;i++){
+    state.teams.push({id:maxId++,classId:curClassId,
+      name:`${cls.name} ${DEF_NAMES[i]||`팀${i+1}`}`,
+      color:COLORS[i%COLORS.length],members:[],leader:null});
+  }
+  save(); renderFormation();
+}
+function shuffleTeamOrder(){
+  if(!state.teams.length) return;
+  state.teams.forEach(t=>{
+    const leader=t.leader;
+    const others=[...t.members].filter(uid=>uid!==leader).sort(()=>Math.random()-.5);
+    t.members=leader!=null?[leader,...others]:others;
   });
-  poolClassFilter=state.classes[0]?.id??null;
   save(); renderFormation();
 }
 function randomAssign(){
@@ -1236,12 +1265,17 @@ function confirmTeams(){
 
 // ── League matches ────────────────────────────
 function genLeagueMatches(){
-  let pairs=[],id=0;
+  const nextId=state.matches.length?Math.max(...state.matches.map(m=>m.id))+1:0;
+  const existing=new Set(state.matches.map(m=>m.t1+','+m.t2));
+  let newPairs=[],id=nextId;
   for(let i=0;i<state.teams.length;i++)
     for(let j=i+1;j<state.teams.length;j++)
-      if(state.teams[i].classId===state.teams[j].classId)
-        pairs.push({id:id++,t1:state.teams[i].id,t2:state.teams[j].id,score1:null,score2:null,stats:{}});
-  state.matches=spreadMatches(pairs);
+      if(state.teams[i].classId===state.teams[j].classId){
+        const key=state.teams[i].id+','+state.teams[j].id;
+        if(!existing.has(key))
+          newPairs.push({id:id++,t1:state.teams[i].id,t2:state.teams[j].id,score1:null,score2:null,stats:{}});
+      }
+  state.matches=[...state.matches,...spreadMatches(newPairs)];
 }
 function spreadMatches(pairs){
   if(pairs.length<=1) return pairs;
@@ -1840,7 +1874,7 @@ function toggleMatchExcluded(mid,side,idx){
 function buildEventLogHTML(m){
   if(!m.events||!m.events.length) return `<div style="padding:14px 16px;font-size:13px;color:var(--text3)">기록 없음 — 득점 선수의 ⚽ + 버튼을 누르면 러닝타임과 함께 자동 기록</div>`;
   const t1=state.teams.find(t=>t.id===m.t1), t2=state.teams.find(t=>t.id===m.t2);
-  const MERGE_SEC=5;
+  const MERGE_SEC=15;
   const sorted=[...m.events].sort((a,b)=>b.time-a.time);
   const used=new Set();
   const rows=[];
@@ -2356,6 +2390,7 @@ function handleRestoreAllFile(e){
           localStorage.setItem('tl_cur','');
           showHomeScreen();renderHomeScreen();
         }
+        _asWrite();
         alert('전체 복원 완료!');
       } else {
         alert('올바른 전체 백업 파일이 아닙니다.\n현재 경기 불러오기는 백업 파일을 사용하세요.');
@@ -2418,6 +2453,18 @@ async function saveAndGoHome(){
 function goHome(){ showHomeScreen(); }
 
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ── Cross-tab sync ────────────────────────────
+window.addEventListener('storage',e=>{
+  if(e.key==='tl_sessions'&&e.newValue){
+    try{
+      const updated=JSON.parse(e.newValue);
+      sessions=updated;
+      const cur=sessions.find(s=>s.id===currentSessionId);
+      if(cur){ Object.assign(state,cur); }
+    }catch(err){}
+  }
+});
 
 // ── Init ──────────────────────────────────────
 loadSessions();
