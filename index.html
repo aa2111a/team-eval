@@ -847,12 +847,21 @@ async function initAutoSave(){
   _asUpdateUI();
 }
 
+let _syncTimer=null;
 function save(){
   if(currentSessionId===null) return;
   const idx=sessions.findIndex(s=>s.id===currentSessionId);
   if(idx!==-1) sessions[idx]={...state,id:currentSessionId};
   localStorage.setItem('tl_sessions',JSON.stringify(sessions));
   if(_asHandle) _asWrite();
+  clearTimeout(_syncTimer);
+  _syncTimer=setTimeout(syncToServer,800);
+}
+async function syncToServer(){
+  try{
+    await fetch('/api/state',{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({sessions,currentSessionId})});
+  }catch(e){ console.warn('Server sync failed',e); }
 }
 function applySession(s){
   state=Object.assign({title:'',classes:[],classIdSeq:0,teams:[],matches:[],
@@ -892,7 +901,21 @@ function applySession(s){
   openClasses.clear();
   state.classes.forEach(c=>openClasses.add(c.id));
 }
-function loadSessions(){
+async function loadSessions(){
+  try{
+    const r=await fetch('/api/state');
+    if(r.ok){
+      const data=await r.json();
+      if(data.sessions?.length){
+        sessions=data.sessions;
+        localStorage.setItem('tl_sessions',JSON.stringify(sessions));
+        const curId=data.currentSessionId||localStorage.getItem('tl_cur')||'';
+        const found=sessions.find(s=>s.id===curId);
+        if(found){ currentSessionId=curId; applySession(found); }
+        return;
+      }
+    }
+  }catch(e){ console.warn('Server load failed, using localStorage',e); }
   try{
     const sd=localStorage.getItem('tl_sessions');
     const old=localStorage.getItem('tl_state');
@@ -916,6 +939,8 @@ function createSession(){
   sessions.push(s);
   localStorage.setItem('tl_sessions',JSON.stringify(sessions));
   enterSession(s.id);
+  clearTimeout(_syncTimer);
+  _syncTimer=setTimeout(syncToServer,800);
 }
 function enterSession(id){
   const s=sessions.find(s=>s.id===id); if(!s) return;
@@ -939,6 +964,8 @@ function deleteSession(id){
   sessions=sessions.filter(s=>s.id!==id);
   localStorage.setItem('tl_sessions',JSON.stringify(sessions));
   if(currentSessionId===id){currentSessionId=null;localStorage.setItem('tl_cur','');}
+  clearTimeout(_syncTimer);
+  _syncTimer=setTimeout(syncToServer,800);
   renderHomeScreen();
 }
 function renderHomeScreen(){
@@ -2467,22 +2494,24 @@ window.addEventListener('storage',e=>{
 });
 
 // ── Init ──────────────────────────────────────
-loadSessions();
-initAutoSave();
-if(currentSessionId!==null){
-  document.getElementById('leagueTitle').value=state.title||'';
-  document.getElementById('leagueTitle').style.display='';
-  document.getElementById('mainTabs').style.display='';
-  document.getElementById('homeScreen').style.display='none';
-  document.querySelector('.content').style.display='block';
-  renderClasses();
-} else {
-  document.getElementById('homeScreen').style.display='block';
-  document.querySelector('.content').style.display='none';
-  document.getElementById('mainTabs').style.display='none';
-  document.getElementById('leagueTitle').style.display='none';
-  renderHomeScreen();
-}
+(async()=>{
+  await loadSessions();
+  initAutoSave();
+  if(currentSessionId!==null){
+    document.getElementById('leagueTitle').value=state.title||'';
+    document.getElementById('leagueTitle').style.display='';
+    document.getElementById('mainTabs').style.display='';
+    document.getElementById('homeScreen').style.display='none';
+    document.querySelector('.content').style.display='block';
+    renderClasses();
+  } else {
+    document.getElementById('homeScreen').style.display='block';
+    document.querySelector('.content').style.display='none';
+    document.getElementById('mainTabs').style.display='none';
+    document.getElementById('leagueTitle').style.display='none';
+    renderHomeScreen();
+  }
+})();
 </script>
 </body>
 </html>
